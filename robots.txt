@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://flax-six-41.vercel.app/sitemap.xml

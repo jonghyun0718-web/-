@@ -1,6 +1,6 @@
 # 클린 뉴스 & 맥락 번역기
 
-### ▶ [바로 써보기](https://cleannews.vercel.app/)
+### ▶ [바로 써보기](https://flax-six-41.vercel.app/)
 
 뉴스 기사를 **3줄요약 · 어휘풀이 · 사실/의견 분리**로 다시 읽어 주는 웹 도구입니다.
 
@@ -155,8 +155,8 @@ open index.html           # macOS
 ### 웹에 올리기
 
 정적 사이트이므로 어디에나 올라갑니다. 저장소를 Vercel·Netlify·GitHub Pages에 연결하면
-바로 배포됩니다. 이 저장소는 Vercel에 연결돼 있어, `master`에 푸시하면
-[cleannews.vercel.app](https://cleannews.vercel.app/)에 자동으로 반영됩니다.
+바로 배포됩니다. 이 저장소는 Vercel에 연결돼 있어, `main`에 푸시하면
+[flax-six-41.vercel.app](https://flax-six-41.vercel.app/)에 자동으로 반영됩니다.
 
 > 정적 호스팅은 루트 주소로 들어오면 `index.html`을 찾습니다. 파일 이름을 바꾸면
 > 404가 뜨니 주의하세요.
@@ -170,6 +170,8 @@ open index.html           # macOS
 
 ```
 index.html            프로그램 전체 (HTML + CSS + JavaScript, 의존성 없음)
+robots.txt            검색 로봇 접근 정책과 사이트맵 위치
+sitemap.xml           Google Search Console 제출용 사이트맵
 DESIGN.md             디자인 시스템 분석 — Tesla
 DESIGN.md_apple.md    디자인 시스템 분석 — Apple (현재 화면의 기준)
 ```
