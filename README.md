@@ -8,7 +8,7 @@
 기사를 "요약해서 빨리 읽게" 하는 데 그치지 않고, **어디까지가 사실이고 어디부터가 누군가의
 판단인지** 눈에 보이게 하는 것이 목표입니다.
 
-파일 하나로 동작합니다. 외부 라이브러리도, 서버도, 설치도 필요 없습니다.
+별도 빌드나 설치 없이 정적 페이지로 동작하며, 분석 기록 저장에는 Supabase를 사용합니다.
 
 ---
 
@@ -82,11 +82,28 @@
 
 **어디로 무엇이 나가는지**
 
-- 기본 분석은 전부 브라우저 안에서 이뤄집니다. 기사 내용이 밖으로 나가지 않습니다.
+- 기본 분석 계산은 브라우저 안에서 이뤄집니다. 분석을 마치면 기사 본문과 분석 결과 전체가
+  Supabase에 기록됩니다(설정 전이거나 연결 실패 시 브라우저에 임시 저장).
 - **링크 자동 가져오기**를 켜면 주소가 외부 수집 서비스로 전송됩니다. (기본 켜짐, 끌 수 있습니다)
 - **AI 정밀 분석**을 쓰면 기사 본문이 Anthropic API로 전송됩니다. (기본 꺼짐)
 
-**분석 기록**은 브라우저에만 저장됩니다. 다른 기기나 다른 브라우저에서는 보이지 않습니다.
+**분석 기록**은 Supabase 설정 시 데이터베이스에 저장됩니다. 별도 회원가입 화면 없이 익명 사용자
+세션으로 기록을 구분하며, Supabase 연결 전이나 일시적인 장애 때는 브라우저에 임시 저장됩니다.
+
+---
+
+## Supabase 연결
+
+1. Supabase 프로젝트의 SQL Editor에서 `supabase/schema.sql`을 실행합니다.
+2. Authentication → Providers → Anonymous Sign-Ins를 활성화합니다.
+3. `index.html`의 `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`에 프로젝트 URL과 publishable key를
+   입력합니다. 기존 프로젝트의 legacy anon key도 사용할 수 있습니다.
+
+테이블에는 RLS가 적용되어 익명 사용자도 자신의 분석 기록만 조회·추가·삭제할 수 있습니다.
+분석이 끝나면 DB 저장 후 분석 기록의 총 건수, 평균 의견 비중, 분야별 횟수와 최근 기록이
+즉시 다시 계산됩니다. `service_role` 또는 secret key는 브라우저 코드에 넣으면 안 됩니다.
+공개 배포에서는 익명 계정 남용을 막기 위해 Supabase Auth의 CAPTCHA 또는 Cloudflare Turnstile도
+설정하는 것이 좋습니다.
 
 ---
 
@@ -110,11 +127,15 @@
 | `id`, `analyzed_at` | 식별자, 분석 시각(ISO 8601) |
 | `category` | 분야 |
 | `title`, `url` | 기사 제목, 주소 |
+| `article_text` | 분석한 기사 본문 |
 | `char_count`, `sentence_count` | 본문 길이, 문장 수 |
 | `fact_count`, `opinion_count`, `quote_count` | 사실·의견·인용 문장 수 |
 | `opinion_ratio` | 의견 비중 (0~1) |
 | `vocab_count` | 풀이한 어휘 수 |
 | `engine` | 규칙 기반 / AI 정밀 분석 |
+| `summary`, `vocab` | 3줄 요약, 어휘 풀이 결과(JSON) |
+| `key_facts`, `key_opinions` | 핵심 사실·판단 결과(JSON) |
+| `checks` | 신뢰도 체크리스트 결과(JSON) |
 
 `분석 기록` 화면에서 **CSV · JSON**으로 내려받을 수 있습니다.
 

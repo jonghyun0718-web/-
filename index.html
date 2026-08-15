@@ -207,6 +207,7 @@
   th{color:var(--ink-48);font-weight:400;font-size:14px;letter-spacing:-0.224px}
   .statbar{height:8px;border-radius:var(--r-pill);background:var(--link);min-width:3px;transition:width .4s}
   .empty{color:var(--ink-48);font-size:17px;padding:24px 0}
+  .sync-status{color:var(--ink-48);font-size:14px;margin:-28px 0 28px}
   .err{background:var(--pearl);color:var(--ink);border:1px solid var(--hairline);
     border-radius:var(--r-md);padding:16px;font-size:14px;margin-top:16px;
     line-height:1.43;letter-spacing:-0.224px}
@@ -318,6 +319,7 @@
 <!-- ── 기록/통계 ── -->
 <section class="card tile t-parchment">
   <h2><span class="n">6</span> 분석 기록</h2>
+  <div class="sync-status" id="syncStatus" aria-live="polite"></div>
   <div id="stats"></div>
   <div class="row">
     <button class="btn-sub" id="expJson">JSON 내보내기</button>
@@ -326,8 +328,9 @@
   </div>
 </section>
 
-<footer>클린 뉴스 &amp; 맥락 번역기 · 모든 분석은 브라우저 안에서 이뤄집니다</footer>
+<footer>클린 뉴스 &amp; 맥락 번역기 · 분석 계산은 브라우저에서, 분석 기록은 Supabase에 저장됩니다</footer>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 "use strict";
 
@@ -335,7 +338,13 @@
 const CATS = ["스포츠","경제","정치","연예","과학"];
 const LS_LOG = "cleanNews.logs.v1";
 const LS_KEY = "cleanNews.apiKey.v1";
+const LS_SUPABASE_SESSION = "cleanNews.supabaseSession.v1";
+// Supabase 프로젝트의 Settings > API Keys에서 아래 두 값을 입력하세요.
+const SUPABASE_URL = "https://fjfescrkbutkjgjtigfm.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_vxxTSg90xUebCnB2DhdGTA_lir0GF5w";
 let category = "경제";
+let db = null;
+let dbUser = null;
 
 /* 공유 링크(게시된 페이지)로 열렸는지 — 이 환경은 외부 사이트 접속이 막혀 있습니다 */
 const IS_HOSTED = typeof claude!=="undefined" && claude && typeof claude.use==="function";
@@ -765,7 +774,7 @@ function render(r){
   $("result").scrollIntoView({behavior:"smooth",block:"start"});
 }
 
-/* ════════ 9. 기록 저장 · 통계 (향후 DB 이관용 스키마) ════════ */
+/* ════════ 9. Supabase 기록 저장 · DB 통계 ════════ */
 /* 저장소 접근이 막힌 환경(파일 미리보기·시크릿 모드)에서도 분석은 계속되도록 감쌉니다 */
 const store = {
   get(k){ try{ return localStorage.getItem(k); }catch{ return null; } },
@@ -774,37 +783,110 @@ const store = {
 };
 const loadLogs = () => { try{ return JSON.parse(store.get(LS_LOG)||"[]"); }catch{ return []; } };
 
-function saveLog(r, url, chars){
+function makeLog(r, url, body){
   const tot = r.total || 1;
-  const logs = loadLogs();
-  logs.unshift({
-    id: Date.now(), analyzed_at: new Date().toISOString(),
+  return {
+    analyzed_at: new Date().toISOString(),
     category, title: r.title.slice(0,120), url: url||"",
-    char_count: chars||0,
+    article_text: body,
+    char_count: body.length,
     sentence_count: tot,
     fact_count: r.cnt.fact, opinion_count: r.cnt.opin, quote_count: r.cnt.quote,
     opinion_ratio: +(r.cnt.opin/tot).toFixed(3),
     vocab_count: r.vocab.length,
     engine: r.engine,
-    summary: r.summary
-  });
-  store.set(LS_LOG, JSON.stringify(logs.slice(0,300)));
-  renderStats();
+    summary: r.summary,
+    vocab: r.vocab,
+    key_facts: r.keyFacts,
+    key_opinions: r.keyOpins,
+    checks: r.checks
+  };
 }
 
-function renderStats(){
-  const logs = loadLogs(), box=$("stats");
-  if(!logs.length){ box.innerHTML=`<div class="empty">아직 분석 기록이 없습니다. 기사를 분석하면 여기에 쌓입니다.</div>`; return; }
+async function saveLog(r, url, body){
+  const log = makeLog(r, url, body);
+  const localLogs = loadLogs();
+  localLogs.unshift({...log, id:Date.now()});
+  store.set(LS_LOG, JSON.stringify(localLogs.slice(0,300)));
+
+  if(db && dbUser){
+    const {error} = await db.from("analysis_logs").insert(log);
+    if(error){
+      $("syncStatus").textContent="DB 저장에 실패해 이 브라우저에 임시 저장했습니다.";
+    }else{
+      $("syncStatus").textContent="Supabase에 저장되었습니다.";
+    }
+  }
+  await renderStats();
+}
+
+async function getAllLogs(){
+  if(db && dbUser){
+    const logs=[], pageSize=1000;
+    for(let from=0;;from+=pageSize){
+      const {data,error} = await db.from("analysis_logs")
+        .select("*").order("analyzed_at",{ascending:false}).range(from,from+pageSize-1);
+      if(error){
+        $("syncStatus").textContent="DB 기록을 불러오지 못해 이 브라우저의 임시 기록을 표시합니다.";
+        return loadLogs();
+      }
+      logs.push(...(data||[]));
+      if(!data || data.length<pageSize) return logs;
+    }
+  }
+  return loadLogs();
+}
+
+function localDashboard(logs){
   const per = {}; CATS.forEach(c=>per[c]={n:0,op:0});
-  logs.forEach(l=>{ if(!per[l.category]) per[l.category]={n:0,op:0}; per[l.category].n++; per[l.category].op+=l.opinion_ratio; });
+  logs.forEach(l=>{ if(!per[l.category]) per[l.category]={n:0,op:0}; per[l.category].n++; per[l.category].op+=Number(l.opinion_ratio)||0; });
+  return {
+    total:logs.length,
+    avg:logs.length ? logs.reduce((a,l)=>a+Number(l.opinion_ratio),0)/logs.length : 0,
+    recentCategory:logs[0]?.category||"-",
+    per,
+    recent:logs.slice(0,8)
+  };
+}
+
+async function getDashboard(){
+  if(db && dbUser){
+    const [statsResult,recentResult] = await Promise.all([
+      db.rpc("get_analysis_stats"),
+      db.from("analysis_logs")
+        .select("id,analyzed_at,category,title,opinion_ratio")
+        .order("analyzed_at",{ascending:false}).limit(8)
+    ]);
+    if(!statsResult.error && !recentResult.error){
+      const stats=statsResult.data||{}, per={};
+      CATS.forEach(c=>{
+        const value=(stats.categories||{})[c]||{};
+        per[c]={n:Number(value.count)||0,op:(Number(value.avg_opinion_ratio)||0)*(Number(value.count)||0)};
+      });
+      return {
+        total:Number(stats.total)||0,
+        avg:Number(stats.avg_opinion_ratio)||0,
+        recentCategory:stats.recent_category||"-",
+        per,
+        recent:recentResult.data||[]
+      };
+    }
+    $("syncStatus").textContent="DB 통계를 불러오지 못해 이 브라우저의 임시 기록을 표시합니다.";
+  }
+  return localDashboard(loadLogs());
+}
+
+async function renderStats(){
+  const dashboard = await getDashboard(), box=$("stats");
+  if(!dashboard.total){ box.innerHTML=`<div class="empty">아직 분석 기록이 없습니다. 기사를 분석하면 여기에 쌓입니다.</div>`; return; }
+  const {total,avg,recentCategory,per,recent}=dashboard;
   const max = Math.max(...Object.values(per).map(v=>v.n),1);
-  const avg = (logs.reduce((a,l)=>a+l.opinion_ratio,0)/logs.length*100).toFixed(0);
 
   box.innerHTML =
     `<div class="metrics" style="margin-bottom:14px">
-       <div class="metric"><b>${logs.length}</b><span>총 분석 건수</span></div>
-       <div class="metric"><b>${avg}%</b><span>평균 의견 비중</span></div>
-       <div class="metric"><b>${logs[0].category}</b><span>최근 분야</span></div>
+       <div class="metric"><b>${total.toLocaleString()}</b><span>총 분석 건수</span></div>
+       <div class="metric"><b>${Math.round(avg*100)}%</b><span>평균 의견 비중</span></div>
+       <div class="metric"><b>${esc(recentCategory)}</b><span>최근 분야</span></div>
      </div>
      <div class="tablewrap"><table><thead><tr><th>분야</th><th style="width:45%">건수</th><th>평균 의견 비중</th></tr></thead><tbody>
      ${CATS.map(c=>`<tr><td>${c}</td>
@@ -813,11 +895,36 @@ function renderStats(){
         <td>${per[c].n?Math.round(per[c].op/per[c].n*100)+"%":"-"}</td></tr>`).join("")}
      </tbody></table>
      <div class="tablewrap"><table style="margin-top:32px"><thead><tr><th>일시</th><th>분야</th><th>제목</th><th>의견</th></tr></thead><tbody>
-     ${logs.slice(0,8).map(l=>`<tr>
+     ${recent.map(l=>`<tr>
         <td style="white-space:nowrap">${new Date(l.analyzed_at).toLocaleDateString("ko-KR",{month:"2-digit",day:"2-digit"})}</td>
         <td>${esc(l.category)}</td><td>${esc(l.title.slice(0,34))}</td>
         <td>${Math.round(l.opinion_ratio*100)}%</td></tr>`).join("")}
      </tbody></table></div>`;
+}
+
+async function initSupabase(){
+  const configured = SUPABASE_URL.startsWith("https://") && !SUPABASE_PUBLISHABLE_KEY.startsWith("YOUR_");
+  if(!configured || !window.supabase){
+    $("syncStatus").textContent="Supabase 설정 전입니다. 현재 기록은 이 브라우저에 임시 저장됩니다.";
+    return;
+  }
+  try{
+    db = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+      auth:{storageKey:LS_SUPABASE_SESSION,persistSession:true,autoRefreshToken:true}
+    });
+    let {data:{session},error} = await db.auth.getSession();
+    if(error) throw error;
+    if(!session){
+      const result = await db.auth.signInAnonymously();
+      if(result.error) throw result.error;
+      session=result.data.session;
+    }
+    dbUser=session.user;
+    $("syncStatus").textContent="Supabase와 동기화되었습니다.";
+  }catch{
+    db=null; dbUser=null;
+    $("syncStatus").textContent="Supabase 연결에 실패했습니다. 설정과 익명 로그인을 확인해 주세요. 현재 기록은 이 브라우저에 임시 저장됩니다.";
+  }
 }
 
 /* 내려받기 — 공유 링크로 열었을 때와 파일로 열었을 때 모두 동작합니다 */
@@ -1110,7 +1217,7 @@ $("run").onclick = async () => {
       r = analyzeLocal(title, body);
     }
     if(via) errBox.innerHTML += `<div class="note">${esc(via)}로 본문 ${body.length.toLocaleString()}자를 가져왔습니다. 아래 본문 칸에서 잘못 수집된 부분을 고친 뒤 다시 분석할 수 있습니다.</div>`;
-    render(r); saveLog(r, url, body.length);
+    render(r); await saveLog(r, url, body);
   }catch(e){
     $("err").innerHTML = `<div class="err">${esc(e.message).replace(/\n/g,"<br>")}</div>`;
   }finally{
@@ -1147,19 +1254,28 @@ $("sample").onclick = () => {
   $("err").innerHTML="";
 };
 
-$("expJson").onclick = () => {
-  const logs=loadLogs(); if(!logs.length) return alert("내보낼 기록이 없습니다.");
+$("expJson").onclick = async () => {
+  const logs=await getAllLogs(); if(!logs.length) return alert("내보낼 기록이 없습니다.");
   download("clean-news-logs.json", JSON.stringify(logs,null,2), "application/json");
 };
-$("expCsv").onclick = () => {
-  const logs=loadLogs(); if(!logs.length) return alert("내보낼 기록이 없습니다.");
-  const cols=["id","analyzed_at","category","title","url","char_count","sentence_count","fact_count","opinion_count","quote_count","opinion_ratio","vocab_count","engine"];
-  const csv=[cols.join(",")].concat(logs.map(l=>cols.map(c=>`"${String(l[c]??"").replace(/"/g,'""')}"`).join(","))).join("\n");
+$("expCsv").onclick = async () => {
+  const logs=await getAllLogs(); if(!logs.length) return alert("내보낼 기록이 없습니다.");
+  const cols=["id","analyzed_at","category","title","url","article_text","char_count","sentence_count","fact_count","opinion_count","quote_count","opinion_ratio","vocab_count","engine","summary","vocab","key_facts","key_opinions","checks"];
+  const value = v => v && typeof v==="object" ? JSON.stringify(v) : String(v??"");
+  const csv=[cols.join(",")].concat(logs.map(l=>cols.map(c=>`"${value(l[c]).replace(/"/g,'""')}"`).join(","))).join("\n");
   download("clean-news-logs.csv", csv, "text/csv;charset=utf-8");
 };
-$("wipe").onclick = () => { if(confirm("저장된 분석 기록을 모두 삭제할까요? 되돌릴 수 없습니다.")){ store.del(LS_LOG); renderStats(); } };
+$("wipe").onclick = async () => {
+  if(!confirm("저장된 분석 기록을 모두 삭제할까요? 되돌릴 수 없습니다.")) return;
+  if(db && dbUser){
+    const {error}=await db.from("analysis_logs").delete().eq("user_id",dbUser.id);
+    if(error) return alert("Supabase 기록 삭제에 실패했습니다: "+error.message);
+  }
+  store.del(LS_LOG);
+  await renderStats();
+};
 
-(function init(){
+(async function init(){
   const k=store.get(LS_KEY);
   if(k){ $("key").value=k; $("saveKey").checked=true; }
 
@@ -1171,7 +1287,8 @@ $("wipe").onclick = () => { if(confirm("저장된 분석 기록을 모두 삭제
       "링크 자동 가져오기는 <b>공유 링크로 열었을 때 쓸 수 없습니다</b> — 보안 정책상 외부 사이트에 접속할 수 없습니다. 기사 본문을 복사해 아래 칸에 붙여넣어 주세요.";
     $("url").placeholder = "공유 페이지에서는 링크 수집이 안 됩니다 — 본문을 붙여넣어 주세요";
   }
-  renderStats();
+  await initSupabase();
+  await renderStats();
 })();
 </script>
 </body>
